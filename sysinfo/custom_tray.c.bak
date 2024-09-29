@@ -1,0 +1,109 @@
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
+#include <Imlib2.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+Display *dpy;
+Window root, tray_window, tray_icon_window;
+Atom _NET_SYSTEM_TRAY_S0, _NET_SYSTEM_TRAY_OPCODE, MANAGER;
+
+void load_icon(Imlib_Image *icon, const char *filename) {
+    *icon = imlib_load_image(filename);
+    if (!*icon) {
+        fprintf(stderr, "Error loading icon: %s\n", filename);
+        exit(1);
+    }
+    imlib_context_set_image(*icon);
+}
+
+Window create_tray_icon_window(int width, int height) {
+    Window window = XCreateSimpleWindow(dpy, root, 0, 0, width, height, 0, 0, 0);
+    XSelectInput(dpy, window, ExposureMask | ButtonPressMask);
+    XMapWindow(dpy, window);
+    return window;
+}
+
+void draw_tray_icon(Window window, Imlib_Image icon) {
+    imlib_context_set_image(icon);
+    int width = imlib_image_get_width();
+    int height = imlib_image_get_height();
+
+    Pixmap pixmap = XCreatePixmap(dpy, window, width, height, DefaultDepth(dpy, DefaultScreen(dpy)));
+    imlib_context_set_display(dpy);
+    imlib_context_set_visual(DefaultVisual(dpy, DefaultScreen(dpy)));
+    imlib_context_set_colormap(DefaultColormap(dpy, DefaultScreen(dpy)));
+    imlib_context_set_drawable(pixmap);
+    imlib_render_image_on_drawable(0, 0);
+    
+    XSetWindowBackgroundPixmap(dpy, window, pixmap);
+    XClearWindow(dpy, window);
+    XFreePixmap(dpy, pixmap);
+}
+
+void register_tray_icon(Window icon_window) {
+    _NET_SYSTEM_TRAY_S0 = XInternAtom(dpy, "_NET_SYSTEM_TRAY_S0", False);
+    _NET_SYSTEM_TRAY_OPCODE = XInternAtom(dpy, "_NET_SYSTEM_TRAY_OPCODE", False);
+    MANAGER = XInternAtom(dpy, "MANAGER", False);
+
+    Window tray_manager = XGetSelectionOwner(dpy, _NET_SYSTEM_TRAY_S0);
+    if (tray_manager != None) {
+        XSetSelectionOwner(dpy, _NET_SYSTEM_TRAY_S0, tray_icon_window, CurrentTime);
+        XEvent ev = {0};
+        ev.xclient.type = ClientMessage;
+        ev.xclient.window = tray_manager;
+        ev.xclient.message_type = _NET_SYSTEM_TRAY_OPCODE;
+        ev.xclient.format = 32;
+        ev.xclient.data.l[0] = CurrentTime;
+        ev.xclient.data.l[1] = 0;  // SYSTEM_TRAY_REQUEST_DOCK
+        ev.xclient.data.l[2] = icon_window;
+        XSendEvent(dpy, tray_manager, False, NoEventMask, &ev);
+    } else {
+        fprintf(stderr, "No system tray manager available. Please ensure a system tray manager is running.\n");
+        exit(1);
+    }
+}
+
+int main() {
+    Imlib_Image icon;
+    XEvent ev;
+
+    dpy = XOpenDisplay(NULL);
+    if (dpy == NULL) {
+        fprintf(stderr, "Cannot open display\n");
+        exit(1);
+    }
+
+    root = DefaultRootWindow(dpy);
+
+    // Load the icon
+    load_icon(&icon, "icon.png");
+
+    // Create the tray icon window with the correct dimensions
+    int icon_width = imlib_image_get_width();
+    int icon_height = imlib_image_get_height();
+    tray_icon_window = create_tray_icon_window(icon_width, icon_height);
+
+    // Register the tray icon with the system tray manager
+    register_tray_icon(tray_icon_window);
+
+    // Main event loop
+    while (1) {
+        XNextEvent(dpy, &ev);
+
+        if (ev.type == Expose) {
+            if (ev.xexpose.window == tray_icon_window) {
+                draw_tray_icon(tray_icon_window, icon);
+            }
+        } else if (ev.type == ButtonPress) {
+            if (ev.xbutton.window == tray_icon_window) {
+                printf("Tray icon clicked!\n");
+            }
+        }
+    }
+
+    imlib_free_image();
+    XCloseDisplay(dpy);
+    return 0;
+}
